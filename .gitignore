@@ -1,0 +1,55 @@
+# Local planning, agent instructions, and session notes
+/plan.md
+/PLAN.md
+/notes.local.md
+/.local/
+/.private/
+.codex/
+.claude/
+AGENTS.md
+CLAUDE.md
+
+# Dependencies and generated builds
+node_modules/
+out/
+release/
+dist/
+.cache/
+coverage/
+
+# Test runs, screenshots, and traces
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+.vscode/
+.idea/
+
+# Local media, reports, model weights, and datasets
+/uploads/
+/data/
+/user-data/
+/reports/
+/reports.json
+/settings.json
+/models/
+/checkpoints/
+*.safetensors
+*.ckpt
+*.pt
+
+# Logs and OS/editor artifacts
+*.log
+*.dmp
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
