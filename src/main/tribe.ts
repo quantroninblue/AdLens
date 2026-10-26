@@ -148,13 +148,16 @@ export class TribeWorker {
     this.ready.catch(() => {});
   }
   private fail(message: string) {const pending = this.pending; this.pending = undefined; pending?.reject(new Error(message));}
-  private touch() {clearTimeout(this.idle); this.idle = setTimeout(() => this.stop(), this.idleMs); this.idle.unref?.();}
-  stop() {
+  private touch() {clearTimeout(this.idle); this.idle = setTimeout(() => void this.stop(), this.idleMs); this.idle.unref?.();}
+  // Resolves once the process has exited (Windows keeps its working directory locked until then).
+  stop(): Promise<void> {
     clearTimeout(this.idle);
     const child = this.child; this.child = undefined; this.ready = undefined;
-    if (!child?.pid) return;
+    if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
     if (windows) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {windowsHide: true, stdio: 'ignore'}).on('error', () => child.kill());
     else {try {process.kill(-child.pid, 'SIGTERM');} catch {/* Already gone. */} setTimeout(() => {try {process.kill(-child.pid!, 'SIGKILL');} catch {/* Already gone. */}}, 3000).unref();}
+    return exited;
   }
   async predict(python: string, request: TribeRequest, signal: AbortSignal, progress: (detail: string) => void): Promise<NeuralSignal> {
     if (this.pending) throw new Error('TRIBE is already running an analysis.');
@@ -165,7 +168,7 @@ export class TribeWorker {
     clearTimeout(this.idle);
     return new Promise<NeuralSignal>((resolve, reject) => {
       // Cancelling kills the process; the next analysis reloads the model.
-      const abort = () => {this.fail('TRIBE analysis cancelled.'); this.stop();};
+      const abort = () => {this.fail('TRIBE analysis cancelled.'); void this.stop();};
       signal.addEventListener('abort', abort, {once: true});
       const done = <T,>(fn: (value: T) => void) => (value: T) => {signal.removeEventListener('abort', abort); fn(value);};
       this.pending = {id, resolve: done(resolve), reject: done(reject), progress};

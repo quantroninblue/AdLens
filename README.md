@@ -79,20 +79,50 @@ Check the installation in that environment before using AdLens:
 python -c "from tribev2 import TribeModel; print('ok')"
 ```
 
-AdLens then finds the environment by itself. It checks conda/Miniconda/Miniforge environments,
-pyenv, `virtualenvs` folders, `.venv`/`venv` folders in your home, Desktop, Documents and common
-project folders, Python installs registered with the Windows `py` launcher, and `python` on PATH.
-Open **Connections** to see what it found, pick an environment, or use **Choose folder…** and
-select the environment folder or the project folder that contains `.venv`. You can also set
-`ADLENS_TRIBE_PYTHON` to the interpreter path, for example
-`C:\Users\you\tribev2\.venv\Scripts\python.exe`.
+### Finding and connecting TRIBE in the app
 
-In Connections you can also set the checkpoint (default `facebook/tribev2`, or a local folder
-with `config.yaml` and `best.ckpt`) and the device (automatic, CUDA or CPU).
+AdLens searches for TRIBE by itself every time the Connections page opens. It looks in:
 
-TRIBE runs on the first video in an analysis, or on an audio file if there is no video. The
-model stays loaded between analyses and is stopped after 15 idle minutes. TRIBE's cache of
-extracted features lives in AdLens's profile folder (`%APPDATA%\AdLens\tribe-cache` on Windows).
+- conda, Miniconda, Miniforge and Mambaforge environments (including `%LOCALAPPDATA%` and
+  `%ProgramData%` installs on Windows, and anything listed in `~/.conda/environments.txt`)
+- pyenv versions and `virtualenvs`, `venvs` and `envs` folders in your home folder
+- `.venv`, `venv` and `env` folders in your home, Desktop, Documents and project folders such as
+  `projects`, `code`, `src`, `repos` or `dev`, one level deep (so `Desktop\tribev2\.venv` is found)
+- Python installs registered with the Windows `py` launcher, and `python` on PATH
+
+Each interpreter it finds is checked for an importable `tribev2` package. Only the ones that have
+it are listed. The check doesn't load TRIBE, so it's quick.
+
+To connect:
+
+1. Click **Connections** in the left sidebar.
+2. In the **TRIBE v2 · local** card, look at **Python environment**. The count on the right shows
+   how many environments with `tribev2` were found. Each entry shows its name, the `tribev2`
+   version, the interpreter path, and whether the weights are already downloaded.
+3. Choose one:
+   - **Automatic** uses the first environment found. This is fine if there is only one.
+   - Click a listed environment to pin that one.
+   - If yours isn't listed, click **Choose folder…** and select the environment folder (the one
+     containing `Scripts\python.exe` on Windows or `bin/python` elsewhere), or the TRIBE project
+     folder that contains `.venv`. AdLens checks it and adds it to the list. It tells you if
+     `tribev2` isn't installed there.
+   - Click **Scan again** after installing TRIBE somewhere new.
+4. Leave **Checkpoint** as `facebook/tribev2`, or enter a local folder containing `config.yaml`
+   and `best.ckpt`. Set **Device** to *Automatic* (GPU when available), *GPU (CUDA)* or *CPU*.
+5. Make sure **Use TRIBE in analyses** is ticked and click **Save connections**.
+6. The badge in the card turns to **Found**, and the line under the card shows the environment in
+   use. The sidebar shows **TRIBE v2 found**. On the New analysis page, the
+   **Analysis components** card shows TRIBE v2 as **Ready** once a video or audio file is added.
+
+You can also skip the search by setting `ADLENS_TRIBE_PYTHON` to the interpreter path before
+starting the app, for example `C:\Users\you\tribev2\.venv\Scripts\python.exe`.
+
+TRIBE runs on the first video in an analysis, or on an audio file if there is no video. The first
+analysis loads the model, which can take a while; it then stays loaded between analyses and is
+stopped after 15 idle minutes or when you change TRIBE settings. TRIBE's cache of extracted
+features lives in AdLens's profile folder (`%APPDATA%\AdLens\tribe-cache` on Windows). If TRIBE
+fails during an analysis, the report shows the error under **Evidence & sources** and the
+analysis continues without it.
 
 ## Connecting a language model
 
@@ -105,6 +135,46 @@ Choose one in **Connections**:
 | Claude account | Install [Claude Code](https://code.claude.com/docs) and sign in once by running `claude`. AdLens runs it with every tool, MCP server, hook and settings file disabled. |
 | OpenAI API key | Paste the key in Connections, or set `ADLENS_OPENAI_KEY`. |
 | Anthropic API key | Paste the key in Connections, or set `ADLENS_ANTHROPIC_KEY`. |
+
+### Finding and connecting a model in the app
+
+When the Connections page opens, AdLens checks every option and shows the result under each
+one. For Ollama, it lists the models installed in Ollama; for the account options, it checks
+that the CLI is installed and signed in; for API keys, it checks the key and lists the models
+the key can use.
+
+To connect a local model with Ollama:
+
+1. Install Ollama. On Windows and macOS it runs in the background after installation; on Linux,
+   start it with `ollama serve` if it isn't running as a service.
+2. Download a model in a terminal, for example `ollama pull qwen2.5vl:7b`. Pick a model that
+   fits your memory; vision models let AdLens show it the video frames.
+3. In AdLens, open **Connections** and, in the **Language model** card, select
+   **Local model (Ollama)**. Its line should read, for example, "2 local models". If it says
+   Ollama is not reachable, start Ollama and click **Check status** at the top of the page.
+4. Choose the model in the **Model** list. The list shows every model Ollama has installed;
+   after pulling a new one, click **Check status** to refresh it.
+5. Leave **Ollama URL** as `http://127.0.0.1:11434` unless Ollama runs on another port. Only
+   `localhost` addresses or HTTPS are accepted.
+6. Click **Save connections**. The badge turns to **Available** and the sidebar shows
+   **Model connected**.
+
+AdLens asks Ollama whether the chosen model supports images. If it doesn't, frames are not sent
+and the report leaves the visual score blank.
+
+To use an account or API key instead, select **ChatGPT account (Codex CLI)**,
+**Claude account (Claude Code)**, **OpenAI API key** or **Anthropic API key**:
+
+- For the two account options, the line under the option says whether the CLI was found and is
+  signed in. If it isn't, sign in from a terminal (`codex login`, or run `claude`) and click
+  **Check status**. **Model** can stay on the CLI's default; for Codex you can type a model name
+  in **Codex model override**.
+- For API keys, paste the key into **API key**, keep **Remember on this computer (encrypted)**
+  ticked if you want it saved, and click **Save key**. The **Model** list then fills with the
+  models your key can use. **Remove** deletes a saved key.
+
+Then click **Save connections**. The chat panel on the right shows the connected model, and the
+same model is used for analyses and chat.
 
 Saved keys are encrypted with the operating system's credential store (DPAPI on Windows,
 Keychain on macOS, libsecret on Linux) and never reach the app's interface. If secure storage

@@ -45,7 +45,7 @@ test('bridge returns a validated, bounded summary with clean protocol output', {
     // The loaded model is reused by the same process.
     const again = await worker.predict(python, {path: path.join(cache, 'clip.mp4'), kind: 'audio', checkpoint: 'facebook/tribev2', device: 'cpu', cache}, new AbortController().signal, () => {});
     assert.equal(again.inputKind, 'audio');
-  } finally {worker.stop(); await rm(cache, {recursive: true, force: true});}
+  } finally {await worker.stop(); await rm(cache, {recursive: true, force: true, maxRetries: 5, retryDelay: 200});}
 }));
 
 test('bridge failures and cancellation surface as errors', {skip}, withFake(async () => {
@@ -56,12 +56,12 @@ test('bridge failures and cancellation surface as errors', {skip}, withFake(asyn
     process.env.FAKE_TRIBE_FAIL = '1';
     await assert.rejects(worker.predict(python, request, new AbortController().signal, () => {}), /TRIBE failed: RuntimeError: synthetic failure/);
     delete process.env.FAKE_TRIBE_FAIL;
-    worker.stop();
+    await worker.stop();
     process.env.FAKE_TRIBE_SLEEP = '30';
     const controller = new AbortController();
     const pending = worker.predict(python, request, controller.signal, () => controller.abort());
     await assert.rejects(pending, /cancelled/);
-  } finally {delete process.env.FAKE_TRIBE_FAIL; delete process.env.FAKE_TRIBE_SLEEP; worker.stop(); await rm(cache, {recursive: true, force: true});}
+  } finally {delete process.env.FAKE_TRIBE_FAIL; delete process.env.FAKE_TRIBE_SLEEP; await worker.stop(); await rm(cache, {recursive: true, force: true, maxRetries: 5, retryDelay: 200});}
 }));
 
 test('discovery finds project, conda and pyenv environments and resolves chosen folders', {skip: process.platform === 'win32' || skip}, async () => {
@@ -105,8 +105,8 @@ test('fsaverage5 predictions get grouped Destrieux regions with opening and tren
     assert.ok(result.regions.some(r => r.id === 'auditory') && result.regions.some(r => r.id === 'default_mode'));
     assert.equal(result.regions.some(r => r.id === 'language'), false, 'groups without any matching labels are omitted');
   } finally {
-    worker.stop(); delete process.env.FAKE_TRIBE_FSAVERAGE;
+    await worker.stop(); delete process.env.FAKE_TRIBE_FSAVERAGE;
     if (previous === undefined) delete process.env.PYTHONPATH; else process.env.PYTHONPATH = previous;
-    await rm(cache, {recursive: true, force: true});
+    await rm(cache, {recursive: true, force: true, maxRetries: 5, retryDelay: 200});
   }
 });

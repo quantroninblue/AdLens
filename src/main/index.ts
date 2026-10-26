@@ -139,7 +139,7 @@ function register() {
     const config = settingsSchema.parse(raw);
     endpoint(config.llm.ollamaUrl, 'api/tags');
     const previous = await settings();
-    if (previous.tribe.python !== config.tribe.python || previous.tribe.checkpoint !== config.tribe.checkpoint || previous.tribe.device !== config.tribe.device) worker.stop();
+    if (previous.tribe.python !== config.tribe.python || previous.tribe.checkpoint !== config.tribe.checkpoint || previous.tribe.device !== config.tribe.device) await worker.stop();
     await store.saveSettings(config); return settings();
   });
   handle('status:list', async () => {const config = await settings(); return Promise.all([selectedLLMStatus(config), tribeStatus(config)]);});
