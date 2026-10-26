@@ -6,8 +6,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const python = (() => {try {return execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-c', 'import numpy, sys; print(sys.executable)'], {encoding: 'utf8'}).trim();} catch {return '';}})();
-const launch = (root: string, env: Record<string, string> = {}) => electron.launch({chromiumSandbox: true, args: [path.resolve('out/main/index.js')],
-  env: {...process.env, ELECTRON_RUN_AS_NODE: '', ADLENS_USER_DATA: root, ADLENS_OPENAI_KEY: '', ADLENS_ANTHROPIC_KEY: '', ...env}});
+const launch = (root: string, extra: Record<string, string> = {}) => {
+  // Remove rather than blank: on Windows an empty ELECTRON_RUN_AS_NODE still counts as set.
+  const {ELECTRON_RUN_AS_NODE: _, ...env} = process.env as Record<string, string>;
+  return electron.launch({chromiumSandbox: true, args: [path.resolve('out/main/index.js')],
+    env: {...env, ADLENS_USER_DATA: root, ADLENS_OPENAI_KEY: '', ADLENS_ANTHROPIC_KEY: '', ...extra}});
+};
 const body = async (req: IncomingMessage) => {const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk)); return Buffer.concat(chunks).toString();};
 const metric = (score: number | null, evidence: string) => ({score, evidence});
 const assessment = {
