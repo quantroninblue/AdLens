@@ -1,167 +1,193 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { assessCopy, fuse } from '../src/main/heuristics';
-import { analyze, type Providers } from '../src/main/engine';
+import { analyze, selectImages, type PreparedAsset, type Providers } from '../src/main/engine';
 import { Store } from '../src/main/store';
-import { endpoint, readCompletion, boundedText } from '../src/main/providers/transport';
-import type { ReasoningContext } from '../src/main/providers';
-import { assessmentSchema, settingsSchema, reportSchema, type AnalysisInput, type Progress } from '../src/shared/schema';
+import { extractJson } from '../src/main/prompts';
+import { ProviderKeys } from '../src/main/llm/keys';
+import type { LLMClient, LLMRequest } from '../src/main/llm';
+import { assessmentSchema, reportSchema, settingsSchema, type AnalysisInput, type Assessment, type NeuralSignal, type Progress } from '../src/shared/schema';
 
-const input = (): AnalysisInput => ({id: randomUUID(), title: 'Launch copy', text: 'Save 20 minutes on your morning routine. Try it free today.', audience: '', platform: 'Instagram'});
-const settings = settingsSchema.parse({});
+const input = (): AnalysisInput => ({id: randomUUID(), title: 'Launch reel', text: 'Save 20 minutes on your morning routine. Try it free today.', audience: '', platform: 'Instagram', assetIds: []});
 const signal = () => new AbortController().signal;
-test('fallback scores only observable English copy dimensions', () => {
+const pixel = 'data:image/jpeg;base64,/9j/AA==';
+const video = (frames = 12): PreparedAsset => ({id: randomUUID(), name: 'reel.mp4', mime: 'video/mp4', size: 10, kind: 'video', path: '/fixture/reel.mp4',
+  frames: {duration: 24, width: 1080, height: 1920, frames: Array.from({length: frames}, (_, i) => ({time: i * 2, image: pixel}))}});
+const neural = (): NeuralSignal => ({source: 'tribe', model: 'TRIBE v2', checkpoint: 'facebook/tribev2', device: 'cpu', asset: 'reel.mp4', inputKind: 'video', tr: 1, timesteps: 3, vertices: 20484, duration: 3,
+  timeConvention: 'Fixture', method: 'Fixture', atlas: null, global: [{t: 0, activity: 1, change: null}, {t: 1, activity: 0, change: .2}, {t: 2, activity: -1, change: .1}],
+  regions: [], moments: [{time: 0, kind: 'peak', detail: 'Fixture'}], words: [{time: 0.4, text: 'Stop'}, {time: 0.8, text: 'scrolling'}, {time: 6, text: 'now'}], runtimeSeconds: 1, warnings: ['Fixture warning']});
+function modelReport(): Assessment {
+  const metric = {score: 70, evidence: 'Fixture evidence'};
+  return {summary: 'Fixture summary', virality: {score: 64, band: 'high', confidence: 'medium', rationale: 'Fixture rationale'},
+    metrics: {hook: metric, retention: metric, emotion: metric, visual: {...metric, score: 90}, audio: metric, clarity: metric, shareability: metric, cta: metric, audience: {...metric, score: 95}},
+    neuralReading: {summary: 'Fixture reading', moments: [{time: 0, observation: 'Peak', implication: 'Strong hook'}]}, strengths: ['Fast hook'], weaknesses: [], recommendations: [{title: 'Cut', detail: 'Trim the middle', time: 6}]};
+}
+class FakeLLM implements LLMClient {
+  name = 'fixture-model'; requests: LLMRequest[] = [];
+  constructor(private replies: string[], readonly vision = true) {}
+  async complete(request: LLMRequest, _signal: AbortSignal, onDelta: (text: string) => void) {
+    this.requests.push(request);
+    const reply = this.replies.shift() ?? '';
+    onDelta(reply); return reply;
+  }
+}
+
+test('copy rules score only observable copy and never estimate virality', () => {
   const result = assessCopy(input());
   assert.equal(result.metrics.cta.score, 75);
-  assert.equal(result.metrics.visual.score, null);
-  assert.equal(result.metrics.audience.score, null);
-  assert.equal(result.metrics.emotion.score, null);
-  const noCta = assessCopy({...input(), text: 'Beautiful furniture for your home.'});
-  assert.equal(noCta.metrics.cta.score, 25);
-  assert.ok(noCta.recommendations.some(r => r.title.includes('next step')));
+  for (const key of ['visual', 'audience', 'emotion', 'retention', 'shareability'] as const) assert.equal(result.metrics[key].score, null);
+  assert.equal(result.virality.score, null);
+  assert.equal(assessCopy({...input(), text: 'Beautiful furniture for your home.'}).metrics.cta.score, 25);
+  assert.ok(Object.values(assessCopy({...input(), text: ''}).metrics).every(m => m.score === null));
 });
-test('empty asset assessment invents no scores or strengths', () => {
-  const result = assessCopy({...input(), text: ''});
-  assert.ok(Object.values(result.metrics).every(m => m.score === null));
-  assert.deepEqual(result.strengths, []);
-});
-test('fusion renormalizes missing dimensions and excludes absent TRIBE', () => {
+test('content score renormalizes over assessed dimensions', () => {
   const metrics = assessCopy(input()).metrics;
   metrics.hook.score = 80; metrics.clarity.score = 60; metrics.cta.score = 40;
-  const result = fuse(metrics, settings.weights);
-  assert.equal(result.overall, 63);
-  assert.equal(result.engagement, result.overall);
-  assert.ok(Math.abs(Object.values(result.contributions).reduce((a,b) => a+b, 0) - 1) < 1e-10);
-  assert.equal(fuse(metrics, settings.weights, {score: 100, weight: .2}).engagement, 70);
-  assert.deepEqual(fuse(assessCopy({...input(), text: ''}).metrics, settings.weights), {overall: null, engagement: null, contributions: {}});
+  const result = fuse(metrics);
+  assert.equal(result.overall, Math.round((80 * .2 + 60 * .1 + 40 * .05) / .35));
+  assert.ok(Math.abs(Object.values(result.contributions).reduce((a, b) => a + b, 0) - 1) < 1e-10);
+  assert.deepEqual(fuse(assessCopy({...input(), text: ''}).metrics), {overall: null, contributions: {}});
 });
-test('schema rejects fabricated ranges and malformed output', () => {
-  const result = assessCopy(input()); result.metrics.hook.score = 101;
-  assert.throws(() => assessmentSchema.parse(result));
-  assert.throws(() => assessmentSchema.parse({summary: 'Looks good'}));
+test('settings defaults fill nested objects', () => {
+  const settings = settingsSchema.parse({});
+  assert.equal(settings.llm.provider, null);
+  assert.equal(settings.tribe.checkpoint, 'facebook/tribev2');
+  assert.equal(settingsSchema.parse({tribe: {python: '/x/python'}}).tribe.device, 'auto');
 });
-test('pipeline produces a validated report and truthful skipped stages', async () => {
+test('model JSON is extracted from fences and prose', () => {
+  assert.deepEqual(extractJson('Here you go:\n```json\n{"a": 1}\n```'), {a: 1});
+  assert.deepEqual(extractJson('{"a": {"b": 2}} trailing'), {a: {b: 2}});
+  assert.throws(() => extractJson('no json'));
+});
+test('image selection gives the primary video most of the budget and labels timestamps', () => {
+  const still: PreparedAsset = {id: randomUUID(), name: 'cover.png', mime: 'image/png', size: 5, kind: 'image', path: '/fixture/cover.png', still: {data: 'AAAA', width: 10, height: 10}};
+  const images = selectImages([video(12), still, {...video(12), name: 'b-roll.mp4'}]);
+  assert.equal(images.filter(i => i.label.startsWith('reel.mp4')).length, 8);
+  assert.equal(images.filter(i => i.label.startsWith('b-roll.mp4')).length, 3);
+  assert.ok(images.length <= 12);
+  assert.match(images[0].label, /reel\.mp4 frame at 0\.0 s/);
+  assert.ok(images.some(i => i.label === 'cover.png (still image)'));
+});
+
+test('full pipeline: TRIBE summary, frames and transcript reach the model; report is validated', async () => {
+  const llm = new FakeLLM([JSON.stringify(modelReport())]);
   const events: Progress[] = [];
-  const report = await analyze(input(), undefined, settings, {}, signal(), p => events.push(p));
-  assert.equal(report.basis, 'heuristic'); assert.deepEqual(report.metadata.models, []);
-  assert.equal(report.neural, undefined); reportSchema.parse(report);
-  assert.equal(events.find(e => e.stage === 'neural')?.state, 'skipped');
-  assert.ok(report.metadata.limitations.some(l => l.includes('uncalibrated')));
-});
-test('provider failure is visible and does not destroy copy analysis', async () => {
-  const fail = async () => {throw new Error('test failure');};
-  const report = await analyze(input(), undefined, settings, {reasoning: {analyze: fail}, tribe: {analyze: fail}}, signal(), () => {});
-  assert.equal(report.basis, 'heuristic'); assert.equal(report.metadata.providers.filter(p => p.state === 'failed').length, 2);
-  assert.equal(report.engagement, report.overall);
-});
-test('model cannot assign visual or audience scores without evidence', async () => {
-  const result = assessCopy(input()); result.metrics.visual.score = 90; result.metrics.audience.score = 95;
-  const report = await analyze(input(), undefined, settings, {reasoning: {analyze: async () => result}, reasoningName: 'test-fixture'}, signal(), () => {});
-  assert.equal(report.basis, 'model'); assert.equal(report.assessment.metrics.visual.score, null); assert.equal(report.assessment.metrics.audience.score, null);
-});
-test('media, reasoning and neural signals remain separate with explicit fusion', async () => {
-  const config = {...settings, weights: {...settings.weights, tribe: .1}};
-  const providers: Providers = {
-    media: {represent: async () => ({summary: 'Test fixture description', observations: [{time: 0, description: 'Test frame'}], modalities: ['video', 'audio'], models: ['fixture-vision', 'fixture-speech'], transcript: 'Try it free'})},
-    reasoning: {analyze: async () => {const result = assessCopy(input()); result.metrics.visual = {score: 60, evidence: 'Test frame'}; return result;}},
-    tribe: {analyze: async () => ({source: 'tribe', model: 'fixture-tribe', score: 80, confidence: null, interpretation: 'Test-only proxy', method: 'Test-only transform', inputModalities: ['video']})},
-  };
-  const report = await analyze(input(), {id: randomUUID(), name: 'fixture.mp4', size: 10, path: '/test-fixture', mime: 'video/mp4'}, config, providers, signal(), () => {});
-  assert.equal(report.metadata.contributions.tribe, .1); assert.equal(report.assessment.metrics.visual.score, 60);
-  assert.equal(report.metadata.providers.filter(p => p.state === 'used').length, 3);
-  assert.ok(report.metadata.modalities.includes('audio'));
-});
-test('reasoning receives the validated TRIBE result even when direct fusion weight is zero', async () => {
-  const neural = {source: 'tribe' as const, model: 'fixture-tribe', score: 61, confidence: null, interpretation: 'Fixture proxy', method: 'Fixture transformation v1', inputModalities: ['text' as const]};
-  const contexts: ReasoningContext[] = [];
-  const report = await analyze(input(), undefined, settings, {
-    tribe: {analyze: async () => neural},
-    reasoning: {analyze: async context => {contexts.push(context); return assessCopy(context.input);}},
-  }, signal(), () => {});
-  assert.deepEqual(contexts[0].neural, {status: 'available', signal: neural, fusionWeight: 0});
-  assert.equal(report.metadata.neuralContextProvided, true);
-  assert.equal(report.metadata.contributions.tribe, undefined);
-  assert.equal(report.engagement, report.overall);
-});
-test('reasoning distinguishes disabled, failed, and invalid TRIBE; no prior signal leaks between runs', async () => {
-  const contexts: ReasoningContext[] = [];
-  const reasoning = {analyze: async (context: ReasoningContext) => {contexts.push(context); return assessCopy(context.input);}};
-  const fail = async () => {throw new Error('fixture failure');};
-  const invalid = async () => ({source: 'tribe' as const, model: 'bad-fixture', score: 101, confidence: null, interpretation: 'Invalid', method: 'Fixture', inputModalities: ['text' as const]});
-  await analyze(input(), undefined, settings, {reasoning, tribe: {analyze: async () => ({...await invalid(), score: 50})}}, signal(), () => {});
-  const disabled = await analyze(input(), undefined, settings, {reasoning}, signal(), () => {});
-  const failed = await analyze(input(), undefined, settings, {reasoning, tribe: {analyze: fail}}, signal(), () => {});
-  const malformed = await analyze(input(), undefined, settings, {reasoning, tribe: {analyze: invalid}}, signal(), () => {});
-  assert.deepEqual(contexts.map(c => c.neural.status), ['available', 'disabled', 'unavailable', 'unavailable']);
-  for (const context of contexts.slice(1)) assert.equal('signal' in context.neural, false);
-  for (const report of [disabled, failed, malformed]) {assert.equal(report.basis, 'model'); assert.equal(report.neural, undefined); assert.equal(report.metadata.neuralContextProvided, false);}
-});
-test('fallback reports do not claim neural context reached a successful reasoning model', async () => {
-  const report = await analyze(input(), undefined, settings, {
-    tribe: {analyze: async () => ({source: 'tribe', model: 'fixture', score: 60, confidence: null, method: 'Fixture', interpretation: 'Fixture', inputModalities: ['text']})},
-    reasoning: {analyze: async () => {throw new Error('fixture failure');}},
-  }, signal(), () => {});
-  assert.equal(report.basis, 'heuristic'); assert.ok(report.neural);
-  assert.equal(report.metadata.neuralContextProvided, false);
-});
-test('an unscored neural response reaches reasoning without inventing an engagement contribution', async () => {
-  const config = {...settings, weights: {...settings.weights, tribe: .2}};
-  const contexts: ReasoningContext[] = [];
-  const report = await analyze(input(), undefined, config, {
-    tribe: {analyze: async () => ({source: 'tribe', model: 'fixture', score: null, confidence: null, method: 'Descriptive summary only; no engagement calibration', interpretation: 'Fixture neural response summary', inputModalities: ['text']})},
-    reasoning: {analyze: async context => {contexts.push(context); return assessCopy(context.input);}},
-  }, signal(), () => {});
-  assert.equal(report.neural?.score, null);
-  assert.equal(report.metadata.neuralContextProvided, true);
-  assert.equal(report.metadata.contributions.tribe, undefined);
-  assert.equal(report.engagement, report.overall);
-  assert.equal(contexts[0].neural.status, 'available');
-});
-test('TRIBE-only media evidence can reach reasoning while unsupported marketing scores remain blank', async () => {
-  const contexts: ReasoningContext[] = [];
-  const report = await analyze({...input(), text: ''}, {id: randomUUID(), name: 'fixture.mp4', size: 10, path: '/fixture', mime: 'video/mp4'}, settings, {
-    tribe: {analyze: async () => ({source: 'tribe', model: 'fixture', score: null, confidence: null, method: 'Descriptive summary', interpretation: 'Fixture response', inputModalities: ['video']})},
-    reasoning: {analyze: async context => {contexts.push(context); return assessCopy(input());}},
-  }, signal(), () => {});
-  assert.equal(contexts.length, 1);
-  assert.equal(contexts[0].neural.status, 'available');
+  const tribeCalls: string[] = [];
+  const providers: Providers = {llm, llmInfo: {provider: 'ollama', model: 'fixture'}, tribe: {analyze: async (asset, _s, progress) => {tribeCalls.push(asset.name); progress('Fixture stage'); return neural();}}};
+  const report = await analyze({...input(), audience: 'Busy parents'}, [video()], providers, signal(), e => events.push(e));
+  reportSchema.parse(report);
+  assert.deepEqual(tribeCalls, ['reel.mp4']);
   assert.equal(report.basis, 'model');
+  assert.equal(report.assessment.virality.score, 64);
+  assert.equal(report.assessment.metrics.visual.score, 90);
   assert.equal(report.metadata.neuralContextProvided, true);
-  assert.ok(Object.values(report.assessment.metrics).every(m => m.score === null));
-  assert.equal(report.overall, null);
+  assert.equal(report.media.imagesSent, 8);
+  assert.match(report.media.transcript ?? '', /^\[0\.4s\] Stop scrolling\n\[6\.0s\] now$/);
+  const request = llm.requests[0];
+  assert.equal(request.json, true);
+  assert.equal(request.images?.length, 8);
+  const context = JSON.parse(request.messages[0].content.split('CONTEXT:\n')[1]);
+  assert.equal(context.neural.status, 'available');
+  assert.equal(context.neural.summary.words, undefined, 'words travel as the transcript, not inside the neural summary');
+  assert.match(request.system, /HOW TO READ THE TRIBE v2 SIGNAL/);
+  assert.match(request.system, /untrusted data/);
+  assert.ok(events.some(e => e.stage === 'neural' && e.detail === 'Fixture stage'));
+  assert.ok(report.metadata.limitations.some(l => l === 'TRIBE: Fixture warning'));
+});
+test('a malformed model reply gets one repair round, then falls back to copy rules', async () => {
+  const fixed = new FakeLLM(['not json', JSON.stringify(modelReport())]);
+  const repaired = await analyze(input(), [], {llm: fixed}, signal(), () => {});
+  assert.equal(repaired.basis, 'model');
+  assert.equal(fixed.requests.length, 2);
+  assert.match(fixed.requests[1].messages[2].content, /did not match the schema/);
+  assert.equal(fixed.requests[1].images?.length, 0);
+  const broken = new FakeLLM(['nope', '{"summary": "still wrong"}']);
+  const fallback = await analyze(input(), [], {llm: broken}, signal(), () => {});
+  assert.equal(fallback.basis, 'heuristic');
+  assert.equal(fallback.assessment.virality.score, null);
+  assert.equal(fallback.metadata.providers.find(p => p.name === 'Language model')?.state, 'failed');
+});
+test('evidence rules override model claims', async () => {
+  const report = await analyze(input(), [], {llm: new FakeLLM([JSON.stringify(modelReport())])}, signal(), () => {});
+  assert.equal(report.assessment.metrics.visual.score, null, 'no images were shown');
+  assert.equal(report.assessment.metrics.audience.score, null, 'no audience brief');
+  assert.equal(report.assessment.metrics.audio.score, null, 'no transcript or TRIBE');
+  assert.equal(report.assessment.neuralReading, null, 'no TRIBE, no neural reading');
+  const blind = await analyze(input(), [video()], {llm: new FakeLLM([JSON.stringify(modelReport())], false)}, signal(), () => {});
+  assert.equal(blind.media.imagesSent, 0);
+  assert.equal(blind.assessment.metrics.visual.score, null);
+  assert.ok(blind.metadata.limitations.some(l => l.includes('cannot see images')));
+});
+test('TRIBE failure, skip reasons and image-only input are reported honestly', async () => {
+  const llm = new FakeLLM([JSON.stringify(modelReport()), JSON.stringify(modelReport()), JSON.stringify(modelReport())]);
+  const failed = await analyze(input(), [video()], {llm, tribe: {analyze: async () => {throw new Error('CUDA out of memory');}}}, signal(), () => {});
+  assert.equal(failed.neural, undefined);
+  assert.equal(failed.metadata.providers.find(p => p.name === 'TRIBE v2')?.state, 'failed');
+  assert.ok(failed.metadata.limitations.some(l => l.includes('CUDA out of memory')));
+  assert.equal(JSON.parse(llm.requests[0].messages[0].content.split('CONTEXT:\n')[1]).neural.status, 'unavailable');
+  const off = await analyze(input(), [video()], {llm, tribeDisabledReason: 'TRIBE is turned off in Connections'}, signal(), () => {});
+  assert.equal(off.metadata.providers.find(p => p.name === 'TRIBE v2')?.detail, 'TRIBE is turned off in Connections');
+  const still: PreparedAsset = {id: randomUUID(), name: 'cover.png', mime: 'image/png', size: 5, kind: 'image', path: '/fixture/cover.png', still: {data: 'AAAA', width: 10, height: 10}};
+  let called = false;
+  const image = await analyze(input(), [still], {llm, tribe: {analyze: async () => {called = true; return neural();}}}, signal(), () => {});
+  assert.equal(called, false);
+  assert.equal(image.metadata.providers.find(p => p.name === 'TRIBE v2')?.detail, 'TRIBE needs a video or audio file');
+});
+test('no model: copy rules only, no invented scores', async () => {
+  const report = await analyze(input(), [], {}, signal(), () => {});
+  assert.equal(report.basis, 'heuristic'); assert.deepEqual(report.metadata.models, []);
+  assert.equal(report.metadata.llm, null);
+  assert.ok(report.metadata.limitations.some(l => l.includes('not a forecast')));
+  await assert.rejects(analyze({...input(), text: ''}, [], {}, signal(), () => {}), /Add a video/);
 });
 test('cancellation aborts rather than silently falling back', async () => {
   const controller = new AbortController();
-  await assert.rejects(analyze(input(), undefined, settings, {reasoning: {analyze: async () => {controller.abort(); throw new Error('cancel');}}}, controller.signal, () => {}), /abort/i);
+  const llm: LLMClient = {name: 'x', vision: true, complete: async () => {controller.abort(); throw new Error('cancel');}};
+  await assert.rejects(analyze(input(), [], {llm}, controller.signal, () => {}), /abort/i);
 });
-test('SSE parser handles UTF-8 and CRLF fragmented into individual bytes', async () => {
-  const streamText = 'data: {"choices":[{"delta":{"content":"hé"}}]}\r\n\r\ndata: {"choices":[{"delta":{"content":"llo"}}]}\n\ndata: [DONE]\n\n';
-  const bytes = new TextEncoder().encode(streamText);
-  const response = new Response(new ReadableStream({start(controller) {for (const byte of bytes) controller.enqueue(Uint8Array.of(byte)); controller.close();}}), {headers: {'content-type': 'text/event-stream'}});
-  const counts: number[] = [];
-  assert.equal(await readCompletion(response, count => counts.push(count)), 'héllo'); assert.deepEqual(counts, [2, 5]);
+test('schema rejects out-of-range scores', () => {
+  const result = modelReport(); result.virality.score = 101;
+  assert.equal(assessmentSchema.safeParse(result).success, false);
 });
-test('transport rejects oversized, errored, and empty streams', async () => {
-  await assert.rejects(boundedText(new Response('12345'), 4), /size limit/);
-  await assert.rejects(readCompletion(new Response('data: {"error":{"message":"no"}}\n\n', {headers: {'content-type': 'text/event-stream'}}), () => {}), /error/);
-  await assert.rejects(readCompletion(new Response('data: [DONE]\n\n', {headers: {'content-type': 'text/event-stream'}}), () => {}), /no structured/);
-});
-test('remote credentials only travel over HTTPS; loopback HTTP is allowed', () => {
-  assert.equal(endpoint('https://inference.example/v1/', 'models'), 'https://inference.example/v1/models');
-  assert.equal(endpoint('http://127.0.0.1:9999', 'health'), 'http://127.0.0.1:9999/health');
-  for (const url of ['http://remote.example', 'https://user:secret@remote.example', 'file:///tmp/a', 'https://remote.example?key=secret']) assert.throws(() => endpoint(url, 'health'));
-});
-test('store persists validated reports and preserves corrupt storage', async () => {
+test('store keeps unreadable old reports on disk, persists chats, and preserves corrupt files', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'adlens-store-'));
   try {
-    const store = new Store(root), report = await analyze(input(), undefined, settings, {}, signal(), () => {});
-    await store.add(report); assert.equal((await new Store(root).history())[0].id, report.id);
-    await store.remove(report.id); assert.deepEqual(await store.history(), []);
+    await writeFile(path.join(root, 'reports.json'), JSON.stringify([{id: 'old-format', engagement: 50}]));
+    const store = new Store(root), report = await analyze(input(), [], {}, signal(), () => {});
+    assert.deepEqual(await store.history(), []);
+    await store.add(report);
+    assert.equal((await new Store(root).history())[0].id, report.id);
+    assert.ok((await readFile(path.join(root, 'reports.json'), 'utf8')).includes('old-format'));
+    await store.saveChat(report.id, [{role: 'user', content: 'Why?'}, {role: 'assistant', content: 'Because.'}]);
+    await store.saveChat(null, [{role: 'user', content: 'Draft question'}]);
+    assert.equal((await store.chat(report.id)).length, 2);
+    assert.equal((await store.chat(null))[0].content, 'Draft question');
+    await store.remove(report.id);
+    assert.deepEqual(await store.history(), []);
+    assert.deepEqual(await store.chat(report.id), []);
     await writeFile(path.join(root, 'reports.json'), 'corrupt');
     await assert.rejects(store.add(report), /left intact/);
+  } finally {await rm(root, {recursive: true, force: true});}
+});
+test('API keys: encrypted on disk, session-only on request, environment wins', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'adlens-keys-'));
+  const cipher = {available: () => true, encrypt: (v: string) => Buffer.from(`enc:${v}`), decrypt: (b: Buffer) => b.toString().slice(4)};
+  try {
+    const keys = new ProviderKeys(root, cipher, {});
+    await keys.set('openai', 'sk-test-123456', true);
+    assert.equal((await readFile(path.join(root, 'openai.bin'), 'utf8')), 'enc:sk-test-123456');
+    const reloaded = new ProviderKeys(root, cipher, {}); await reloaded.load();
+    assert.deepEqual(reloaded.get('openai'), {key: 'sk-test-123456', storage: 'encrypted'});
+    await keys.set('anthropic', 'sk-ant-abcdefgh', false);
+    await assert.rejects(readFile(path.join(root, 'anthropic.bin')));
+    await assert.rejects(keys.set('openai', 'short', true), /valid API key/);
+    await assert.rejects(new ProviderKeys(root, {...cipher, available: () => false}, {}).set('openai', 'sk-test-123456', true), /Secure storage/);
+    const env = new ProviderKeys(root, cipher, {ADLENS_OPENAI_KEY: 'sk-from-env-1'}); await env.load();
+    assert.equal(env.get('openai')?.storage, 'environment');
+    await keys.remove('openai'); assert.equal(keys.get('openai'), undefined);
   } finally {await rm(root, {recursive: true, force: true});}
 });

@@ -1,114 +1,169 @@
 # AdLens
 
-AdLens is a desktop app for reviewing marketing copy, images, and short videos.
-The idea is to bring visual observations, speech, copy, and predicted neural
-responses into one report, with enough evidence to explain each assessment.
+AdLens is a desktop app for reviewing short videos (Reels, TikToks, Shorts), images and
+marketing copy, and estimating how likely they are to spread. It combines two things that run
+on your own computer:
 
-The desktop app works. The model services are still being connected. You can
-review copy locally today; image understanding, transcription, and model-based
-analysis need remote endpoints. There are no model weights bundled with the app.
+- **TRIBE v2** (Meta FAIR), which predicts how an average viewer's brain responds to the video,
+  second by second.
+- **A language model** of your choice: a local model through Ollama, your ChatGPT or Claude
+  account, or an OpenAI/Anthropic API key. It looks at sampled frames, the transcript and
+  TRIBE's output and writes a report you can review.
 
-## Running it
+The report gives a virality potential estimate with its reasoning, scores for the hook, pacing,
+emotion, visuals, sound, clarity, shareability, call to action and audience fit, a timeline of
+the predicted brain response with notable moments, and concrete edits. A chat panel lets you
+ask follow-up questions about the report or the draft.
 
-Use Node.js 22.12 or later:
+The scores are estimates, not forecasts of views. See **How scoring works** in the app.
 
-```bash
+## Requirements
+
+- Windows 10/11, macOS or Linux.
+- [Node.js](https://nodejs.org/) 22.12 or later (the LTS installer is fine). It includes npm.
+- For TRIBE: a Python environment with [TRIBE v2](https://github.com/facebookresearch/tribev2)
+  installed (see [Connecting TRIBE v2](#connecting-tribe-v2)). AdLens does not install it.
+- For the report and chat: one of the language model options in
+  [Connecting a language model](#connecting-a-language-model).
+
+## Install and run
+
+On Windows, open **PowerShell** (or Windows Terminal). On macOS/Linux, open a terminal.
+
+```powershell
+cd path\to\Adlens
 npm ci
 npm run dev
 ```
 
-For a built version, run `npm run build`, then `npm start`. `npm run package`
-creates an unpacked desktop application in `release/`. Development and desktop
-tests have been run on Ubuntu; other platforms haven't been checked yet.
+`npm ci` installs the exact dependency versions from `package-lock.json`, including Electron.
+Use `npm install` instead if you change dependencies. `npm run dev` starts the app with live reload.
 
-On Linux, window transparency depends on the compositor. The install script also
-checks for an existing Chromium sandbox helper. If Electron won't launch because
-of a sandbox error, check your system's Electron sandbox setup and rerun
-`node scripts/prepare-linux-sandbox.mjs`.
+To run a production build without the dev server:
 
-## What's there
+```powershell
+npm run build
+npm start
+```
 
-- Image and video import, with copy, channel, and audience inputs.
-- Reports covering the hook, clarity, audience fit, emotion, visuals, and CTA.
-- Evidence, recommendations, provider status, and scoring details in each report.
-- Saved analyses, search, deletion, and JSON export.
-- Remote provider adapters with streamed reasoning responses and cancellation.
-- Local copy checks when a reasoning server isn't available.
+To build an installer for the current platform, run `npm run package`. The output goes to
+`release\`: an NSIS installer (`AdLens Setup <version>.exe`) on Windows, a DMG on macOS and an
+AppImage on Linux. `npm run package:dir` builds an unpacked app folder instead, which is faster
+for a quick check. The installer is not code-signed, so Windows SmartScreen will warn the first
+time; choose **More info → Run anyway**.
 
-Supported uploads are PNG, JPEG, WebP, MP4, MOV, and WebM, up to 100 MB. Images
-have a preview; videos currently show file details. Without a media endpoint,
-uploading an asset does not analyze its contents.
+On Linux, if Electron won't start because of a sandbox error, check your system's Electron
+sandbox setup and rerun `node scripts/prepare-linux-sandbox.mjs`.
 
-The local fallback checks sentence length, opening cues, and explicit calls to
-action in English. It leaves dimensions it cannot assess blank.
+## Connecting TRIBE v2
 
-## Connecting models
+TRIBE runs from its own Python environment (3.11 or later). Install it the way its repository
+describes, for example:
 
-Set the URLs in **Connections** and provide API keys through environment variables.
-The available variables are listed in [.env.example](.env.example). Environment
-values override saved settings. A `.env` file is not loaded automatically.
+```powershell
+git clone https://github.com/facebookresearch/tribev2
+cd tribev2
+python -m venv .venv
+.venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
+pip install -e ".[plotting]"    # "plotting" adds nilearn, used for the brain-region summary
+```
 
-There are three provider interfaces:
+TRIBE downloads its checkpoint and feature models from Hugging Face on first use. Its text model
+(Llama 3.2) is gated: accept Meta's licence on the model page and log in with
+`huggingface-cli login` in the same environment. A CUDA GPU is strongly recommended; on CPU an
+analysis can take a long time.
 
-| Provider | Job |
+Check the installation in that environment before using AdLens:
+
+```powershell
+python -c "from tribev2 import TribeModel; print('ok')"
+```
+
+AdLens then finds the environment by itself. It checks conda/Miniconda/Miniforge environments,
+pyenv, `virtualenvs` folders, `.venv`/`venv` folders in your home, Desktop, Documents and common
+project folders, Python installs registered with the Windows `py` launcher, and `python` on PATH.
+Open **Connections** to see what it found, pick an environment, or use **Choose folder…** and
+select the environment folder or the project folder that contains `.venv`. You can also set
+`ADLENS_TRIBE_PYTHON` to the interpreter path, for example
+`C:\Users\you\tribev2\.venv\Scripts\python.exe`.
+
+In Connections you can also set the checkpoint (default `facebook/tribev2`, or a local folder
+with `config.yaml` and `best.ckpt`) and the device (automatic, CUDA or CPU).
+
+TRIBE runs on the first video in an analysis, or on an audio file if there is no video. The
+model stays loaded between analyses and is stopped after 15 idle minutes. TRIBE's cache of
+extracted features lives in AdLens's profile folder (`%APPDATA%\AdLens\tribe-cache` on Windows).
+
+## Connecting a language model
+
+Choose one in **Connections**:
+
+| Option | Setup |
 | --- | --- |
-| Media | Visual observations, video processing, and transcription |
-| Reasoning | Interpret the collected evidence and return a structured report |
-| TRIBE | Return a predicted neural-response summary and, optionally, a derived proxy score |
+| Local model (Ollama) | Install [Ollama](https://ollama.com/), then pull a vision-capable model, for example `ollama pull qwen2.5vl:7b` or `ollama pull gemma3`. Models without vision still work, but they can't see the frames, so visuals are not scored. |
+| ChatGPT account | Install the Codex CLI (`npm install -g @openai/codex`) and sign in once with `codex login`. AdLens runs it in a read-only sandbox in an empty temporary folder, with your Codex config, rules and browser tools turned off. |
+| Claude account | Install [Claude Code](https://code.claude.com/docs) and sign in once by running `claude`. AdLens runs it with every tool, MCP server, hook and settings file disabled. |
+| OpenAI API key | Paste the key in Connections, or set `ADLENS_OPENAI_KEY`. |
+| Anthropic API key | Paste the key in Connections, or set `ADLENS_ANTHROPIC_KEY`. |
 
-Colibrì is the intended inference backend for the reasoning model. The client
-currently speaks an OpenAI-compatible chat-completions protocol, so the server
-needs to expose that interface. The reasoning model receives the media summary,
-copy, audience brief, and any valid TRIBE result.
+Saved keys are encrypted with the operating system's credential store (DPAPI on Windows,
+Keychain on macOS, libsecret on Linux) and never reach the app's interface. If secure storage
+isn't available, a key can be used for the current session only.
 
-The media and TRIBE endpoints are our own wrapper contracts, documented in
-[docs/providers.md](docs/providers.md). They are not official hosted model APIs.
-Neither live Colibrì nor live TRIBE inference has been verified yet.
+Content only leaves your computer if you pick the ChatGPT, Claude or API options. It then goes
+to that provider under your account.
 
-The deployment plan puts TRIBE and Colibrì on the same VM, with a coordinator
-passing results between them. For now, the Electron main process coordinates
-those calls. Local video preparation and the server coordinator are still to do.
-The [TRIBE source notes](docs/tribe-source-review.md) cover the proposed split.
+## Using it
 
-## Reading the scores
+1. Drop files on the workspace or click **browse files**: MP4, MOV, WebM or MKV videos, JPG,
+   PNG or WebP images, MP3/WAV/OGG/FLAC audio, and TXT/MD files. Text files are added to the copy.
+2. Add or edit the caption and on-screen text, choose the platform and, optionally, describe the
+   audience.
+3. Click **Analyze virality**. AdLens samples frames from each video, runs TRIBE, sends
+   everything to the model and saves the report.
+4. Read the **Assessment**, **Brain response** and **Evidence & sources** tabs, ask follow-up
+   questions in the chat, and export the report as JSON if you need it elsewhere.
 
-These are prototype assessments, not calibrated predictions of reach or sales.
-TRIBE predicts neural responses; an engagement score needs a separate, documented
-mapping from those responses. A summary without a score is accepted.
+If TRIBE or the model is missing or fails, the report says so and uses what is available.
+Without a model, only basic English copy checks run.
 
-Overall is a weighted average of the available dimensions. Missing dimensions
-are left out and the remaining weights are normalized. The default weights are
-hook .25, clarity .25, audience .15, emotion .10, visual .10, and CTA .15.
+## Environment variables
 
-Direct numerical blending of the TRIBE score defaults to zero. Its summary can
-still inform the reasoning model. That distinction is recorded in the report;
-arithmetic weights don't tell us how much a piece of context influenced the model.
-The rules themselves are in [heuristics.ts](src/main/heuristics.ts).
+All optional. Set them in the shell before `npm run dev` or `npm start`; a `.env` file is not
+loaded. In PowerShell: `$env:ADLENS_TRIBE_PYTHON = "C:\path\to\python.exe"`.
 
-## Working on the code
+| Variable | Purpose |
+| --- | --- |
+| `ADLENS_TRIBE_PYTHON` | Interpreter of the TRIBE environment, overriding the setting |
+| `ADLENS_OPENAI_KEY`, `ADLENS_ANTHROPIC_KEY` | API keys, overriding saved keys |
+| `ADLENS_USER_DATA` | Separate profile folder for settings, reports and chats |
 
-The app uses Electron, React, TypeScript, and Zod. The main process owns file
-access, provider requests, report validation, and storage. The renderer talks to
-it through the preload bridge.
+## Development
 
-```text
-src/main/engine.ts       Analysis pipeline and fallback handling
-src/main/providers/     Remote adapters and streaming transport
-src/main/store.ts        Local reports and settings
-src/shared/             Schemas and shared types
-src/preload/            Desktop API exposed to the renderer
-src/renderer/src/       React interface
+```powershell
+npm test              # unit tests: engine, storage, keys, model connectors, TRIBE bridge
+npm run typecheck
+npm run test:smoke    # builds the app and drives it with Playwright
 ```
 
-```bash
-npm test
-npm run test:smoke
-```
+The TRIBE bridge tests and the full-pipeline desktop test run the real bridge against a small
+stand-in `tribev2` package in `tests/fixtures`, so they need Python with numpy but not TRIBE.
+They are skipped when that isn't available. The Codex and Claude Code connector tests use
+stand-in executables and are skipped on Windows.
 
-The smoke suite builds and drives the sandboxed Electron app with temporary user
-data. Provider tests use local HTTP fixtures; they don't test real model quality.
-Screenshots and test output are written to `test-results/`.
+Project layout:
 
-Reports and settings live in Electron's user-data directory. Reports include copy,
-transcripts, and analysis results, but not the original media files. Up to 100
-reports are retained. Keys stay in the main process environment.
+| Path | Contents |
+| --- | --- |
+| `src/main/` | Electron main process: IPC, analysis pipeline, storage |
+| `src/main/tribe.ts`, `resources/tribe_bridge.py` | TRIBE discovery, worker process and the Python bridge |
+| `src/main/llm/` | Ollama, Codex CLI, Claude Code CLI, OpenAI and Anthropic connectors |
+| `src/main/prompts.ts` | Instructions given to the model, including how to read TRIBE output |
+| `src/renderer/` | React interface |
+| `src/shared/` | Schemas shared by both sides |
+| `docs/tribe-source-review.md` | Notes from reading the TRIBE v2 source |
+
+## Licence note
+
+TRIBE v2 and its `neuralset` dependency are released under CC BY-NC 4.0, which allows
+non-commercial use only. Check that this fits how you use AdLens.

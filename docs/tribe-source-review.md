@@ -1,8 +1,8 @@
-# TRIBE v2: local preprocessing and a shared inference VM
+# TRIBE v2 source review
 
-Inspected 5 October 2026. This is a source review and deployment design, not a
-measurement of inference latency or a completed cloud integration. No model
-weights or neuroscience datasets were downloaded or executed.
+Inspected 5 October 2026 (wrapper re-checked 26 October 2026). This is a source review, not a
+measurement of inference latency. No model weights or neuroscience datasets were downloaded
+or executed.
 
 Sources inspected:
 
@@ -22,7 +22,7 @@ There are three separate stages. “Preprocessing” can mean either inexpensive
 media operations or expensive learned feature extraction; these need different
 placements.
 
-| Stage | Source behavior | AdLens placement recommendation |
+| Stage | Source behavior | Placement in the earlier remote-VM plan (since dropped) |
 | --- | --- | --- |
 | Event preparation | Video/audio events, audio extraction, chunks, aligned words and language context | Metadata and media operations may run locally; ASR/alignment stays on VM by default |
 | Feature extraction | Video, acoustic and language encoders produce aligned hidden features | VM by default |
@@ -55,7 +55,7 @@ Wav2Vec-BERT 2.0, and Llama 3.2 3B as video, audio, and text feature extractors.
 Features are aligned at 2 Hz. The video lookback is four seconds. The brain output
 frequency is 1 Hz; configured inference segments span 100 output timesteps, and
 the transformer is non-causal. Intermediate layer selection/aggregation is part
-of the input contract. Colibrì's reasoning model cannot simply replace that text
+of the input contract. The report-writing language model cannot simply replace that text
 feature encoder without changing the brain model's learned inputs.
 [Checkpoint configuration](https://huggingface.co/facebook/tribev2/blob/f894e783020944dcd96e5568550afe2aa9743f9f/config.yaml).
 
@@ -111,58 +111,30 @@ contract remains work for the real server integration. The reasoning prompt
 forbids deriving scene timings from an untimed scalar or treating predictions as
 observed viewer attention.
 
-## Shared VM design
+## How AdLens uses TRIBE now
 
-Proposed deployment, not yet implemented:
+AdLens no longer plans a remote TRIBE server. TRIBE runs in its own Python environment on the
+same computer, and AdLens talks to it through `resources/tribe_bridge.py`:
 
-```mermaid
-flowchart LR
-    subgraph Laptop
-        E[Electron workspace] --> P[Optional local media preparation]
-    end
-    P -->|One upload plus manifest| G
-    subgraph VM[One cloud VM]
-        G[Job coordinator and asset store] --> F[Aligned events and learned features]
-        G --> V[Visual observations and transcription]
-        F --> T[TRIBE brain-response inference]
-        T --> N[Bounded neural summary with provenance]
-        N --> C[Reasoning model served by Colibrì]
-        V --> C
-        C --> R[Validated report and fusion]
-    end
-    R -->|Progress and report stream| E
-```
+- AdLens finds interpreters where `tribev2` is importable (the probe uses `importlib.util.find_spec`,
+  so it does not import torch) or uses the one chosen in Connections.
+- The bridge is started once with that interpreter and kept alive between analyses, so the model
+  loads once. It is stopped after 15 idle minutes, when settings change, or when an analysis is
+  cancelled.
+- For each video or audio file it calls `TribeModel.from_pretrained(checkpoint, cache_folder, device)`,
+  `get_events_dataframe(video_path=... | audio_path=...)` and `predict(events)`, exactly as the
+  upstream quick start does. TRIBE therefore does its own audio extraction, WhisperX transcription
+  and feature extraction; AdLens does not resample or re-time anything it sends.
+- The time × vertex prediction stays inside the bridge. It returns a bounded JSON summary: per-step
+  RMS response z-scored within the clip, the pattern change between consecutive steps
+  (1 − Pearson r), grouped Destrieux regions on fsaverage5 when `nilearn` is installed (left then
+  right hemisphere), peaks, dips and pattern shifts, and the word timings from the events table.
+- Segment start times come from the segments `predict` returns. The upstream 5-second hemodynamic
+  offset is already applied by TRIBE and is not applied again.
 
-Use an asset ID after the first upload. The coordinator shares local media and
-cached features and passes the neural result to Colibrì over loopback or in
-process; raw tensors stay on the VM. Report progress comes from actual job events.
-Separate provider interfaces remain useful even on one physical host.
+The video frames that the language model sees are sampled separately in the app (up to twelve per
+video). They are for the model's semantic review and never feed TRIBE.
 
-This architecture removes redundant uploads and the TRIBE → laptop → reasoning
-handoff. It does not establish a latency figure. Shared GPU/RAM/CPU/NVMe contention
-may offset network savings. Benchmark warm and cold runs, model switching, memory
-peaks, and concurrent jobs before choosing the VM configuration. The upstream
-pipeline already attempts to release cached extractor models between stages;
-this is not a blanket guarantee that all models fit concurrently.
-
-The current Electron engine still uploads to the media and neural endpoints
-separately and sends the neural result back in the reasoning request. Co-locating
-those endpoints alone does not change that orchestration. A coordinator endpoint,
-asset handles, and server-owned progress/cancellation are the next deployment work.
-
-## Implemented in this update
-
-- Validated TRIBE context now reaches the configured reasoning provider, with
-  explicit available/unavailable/disabled status and the direct fusion weight.
-- Successful model reports record whether neural context was supplied. Zero direct
-  weight removes arithmetic blending, but not possible influence on interpretation.
-- Unscored neural summaries are valid and never contribute a fabricated number.
-- Video upload context separates copy and untimed transcript from sensory events.
-  A wrapper may derive a text modality from speech in the original video.
-- Focused tests cover the actual HTTP reasoning payload, failures, absent signals,
-  unscored summaries, and numeric fusion behavior.
-
-Local video preprocessing, a cloud coordinator, TRIBE execution, a calibrated
-engagement mapping, and actual model latency remain unimplemented/unmeasured.
-The upstream repository and dependency declare CC-BY-NC-4.0; retain this concrete
-constraint when choosing how the research prototype will be used.
+Still not established: a validated mapping from these summaries to engagement or virality, and
+actual inference times on typical laptops. The upstream repository and its dependency declare
+CC-BY-NC-4.0, which limits use to non-commercial purposes.

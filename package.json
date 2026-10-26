@@ -1,8 +1,8 @@
 {
   "name": "adlens",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "A desktop workspace for multimodal marketing analysis.",
+  "description": "Desktop app that estimates the virality potential of short videos, images and copy using TRIBE v2 and a language model.",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -11,11 +11,14 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "test:smoke": "npm run build && playwright test",
-    "package": "npm run build && electron-builder --dir",
-    "postinstall": "node scripts/prepare-linux-sandbox.mjs"
+    "package": "npm run build && electron-builder",
+    "postinstall": "node scripts/prepare-linux-sandbox.mjs",
+    "package:dir": "npm run build && electron-builder --dir"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0",
     "lucide-react": "^0.577.0",
+    "openai": "^7.25.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "zod": "^4.6.5"
@@ -58,6 +61,12 @@
       "target": [
         "nsis"
       ]
-    }
+    },
+    "extraResources": [
+      {
+        "from": "resources/tribe_bridge.py",
+        "to": "tribe_bridge.py"
+      }
+    ]
   }
 }

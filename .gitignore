@@ -1,15 +1,10 @@
-# Local planning, agent instructions, and session notes
-/plan.md
-/PLAN.md
-/notes.local.md
+# Local notes
 /.local/
 /.private/
-.codex/
-.claude/
-AGENTS.md
-CLAUDE.md
 
 # Dependencies and generated builds
+__pycache__/
+*.pyc
 node_modules/
 out/
 release/
